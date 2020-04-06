@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from SBP_utils import Conv2d_SBP, Linear_SBP, SBP_layer 
+from SBP_utils_gpu import Conv2d_SBP, Linear_SBP, SBP_layer 
 
 #I set these to equally weight the kl terms 
 #from different layers, change if desired.
@@ -66,73 +66,49 @@ class SBP_Block(nn.Module):
         return x
 
 
-class SBP_AlexNet(nn.Module):
+class SBPConv_AlexNet(nn.Module):
 
-    def __init__(self, cfg, classes=100,sbp_linear=False, conv=False,kl_weights= generic_kl_weights['five']):
-        super(SBP_AlexNet, self).__init__()
+    def __init__(self, cfg, classes=100,kl_weights= generic_kl_weights['eight']):
+        super(SBPConv_AlexNet, self).__init__()
         
-        if conv: 
-            
-            self.block1 = SBP_ConvBlock(3,cfg[0])
-            self.mp1 = nn.MaxPool2d(kernel_size=3,stride=2)
+        self.cfg = cfg
+        
+        self.kl_weights = kl_weights
+        
+        self.block1 = SBP_ConvBlock(3,cfg[0])
+        self.mp1 = nn.MaxPool2d(kernel_size=3,stride=2)
 
-            self.block2 = SBP_ConvBlock(cfg[0],cfg[1],kernel_size=3,stride=1,padding=1)
-            self.mp2= nn.MaxPool2d(kernel_size=3,stride=2)
+        self.block2 = SBP_ConvBlock(cfg[0],cfg[1],kernel_size=3,stride=1,padding=1)
+        self.mp2= nn.MaxPool2d(kernel_size=3,stride=2)
 
-            self.block3 = SBP_ConvBlock(cfg[1],cfg[2],kernel_size=3, stride=1, padding=1)
-            self.block4 = SBP_ConvBlock(cfg[2],cfg[3],kernel_size=3, stride=1, padding=1)
-            self.block5 = SBP_ConvBlock(cfg[3], cfg[4], kernel_size=3, stride=1, padding=1)
-            
-        else: 
-            self.block1 = SBP_Block(3,cfg[0])
-            self.mp1 = nn.MaxPool2d(kernel_size=3,stride=2)
+        self.block3 = SBP_ConvBlock(cfg[1],cfg[2],kernel_size=3, stride=1, padding=1)
+        self.block4 = SBP_ConvBlock(cfg[2],cfg[3],kernel_size=3, stride=1, padding=1)
+        self.block5 = SBP_ConvBlock(cfg[3], cfg[4], kernel_size=3, stride=1, padding=1)
 
-            self.block2 = SBP_Block(cfg[0],cfg[1],kernel_size=3,stride=1,padding=1)
-            self.mp2= nn.MaxPool2d(kernel_size=3,stride=2)
-
-            self.block3 = SBP_Block(cfg[1],cfg[2],kernel_size=3, stride=1, padding=1)
-            self.block4 = SBP_Block(cfg[2],cfg[3],kernel_size=3, stride=1, padding=1)
-            self.block5 = SBP_Block(cfg[3], cfg[4], kernel_size=3, stride=1, padding=1)
             
         self.mp3 = nn.MaxPool2d(kernel_size=3, stride=2)
        
-        self.conv = conv
-        self.cfg = cfg
-        self.sbp_linear = sbp_linear
-        if sbp_linear == False:
-            
-            self.kl_weights = generic_kl_weights['five']
-            self.classifier = nn.Sequential(
-                    nn.Dropout(),
-                    nn.Linear(cfg[4] * 1 * 1, cfg[5]),
-                    nn.ReLU(inplace=True),
-                    nn.Dropout(),
-                    nn.Linear(cfg[5], cfg[6]),
-                    nn.ReLU(inplace=True),
-                    nn.Linear(cfg[6], classes)
-            )
-            
+      
+       
 
-        else:
-            self.kl_weights = generic_kl_weights['eight']
-            
-            self.dr1 = nn.Dropout()
-            self.lsbp1 =  nn.Linear_SBP(cfg[4] * 1 * 1, cfg[5])
-            self.rel2 = nn.ReLU(inplace=True)
-            self.dr2 = nn.Dropout()
-            self.lsbp2 = nn.Linear_SBP(cfg[5], cfg[6])
-            self.rel3 = nn.ReLU(inplace=True)
-            #fixme
-            self.linear = nn.Linear(cfg[6], classes)
-           
-            
-            self.classifier = [self.dr1, 
-                               self.lsbp1, 
-                               self.rel2,
-                               self.dr2,
-                               self.lsbp2,
-                               self.rel3,
-                               self.lsbp3]
+        self.dr1 = nn.Dropout()
+        self.lsbp1 =  Linear_SBP(cfg[4] * 1 * 1, cfg[5])
+        self.rel2 = nn.ReLU(inplace=True)
+        self.dr2 = nn.Dropout()
+        self.lsbp2 = Linear_SBP(cfg[5], cfg[6])
+        self.rel3 = nn.ReLU(inplace=True)
+       
+        self.last = nn.Linear(cfg[6], classes)
+
+
+        self.classifier = [self.dr1, 
+                           self.lsbp1, 
+                           self.rel2,
+                           self.dr2,
+                           self.lsbp2,
+                           self.rel3,
+                           self.last]
+        
         self.features = [self.block1, 
                          self.mp1, 
                          self.block2,
@@ -142,20 +118,16 @@ class SBP_AlexNet(nn.Module):
                          self.block5,
                          self.mp3]
         
-        if kl_weights:
-            self.kl_weights = kl_weights
+
     def forward(self, x):
 
          
         if self.training:
             kl_temp = 0
             x, kl1 = self.block1(x)
-             
-            
             x = self.mp1(x)
 
             x, kl2 = self.block2(x)
-            
             x = self.mp2(x)
                 
             x, kl3 = self.block3(x)
@@ -169,53 +141,38 @@ class SBP_AlexNet(nn.Module):
             kl_temp = kl1 * self.kl_weights[0] + kl2 * self.kl_weights[1]+ kl3 * self.kl_weights[2]+ kl4 * self.kl_weights[3]+ kl5 * self.kl_weights[4]
                        
             x = torch.flatten(x, 1)
-            if not self.sbp_linear: 
-                x = self.classifier(x)
+           
+            #classifer
+            x = self.dr1(x) 
+            x, kl6 = self.lsbp1(x)
+            x = self.rel2(x)
+            x = self.dr2(x)
+            x,kl7 = self.lsbp2(x)
+            x = self.rel3(x)
+            x =  self.last(x)
                 
-            else: 
-                x = self.dr1(x) 
-                x, kl6 = self.lsbp1(x)
-
-                x = self.rel2(x)
-                x = self.dr2(x)
-                x,kl7 = self.lsbp2(x)
-                x = self.rel3(x)
-                x =  self.linear(x)
-                
-                kl_temp = kl_temp + kl6 * self.kl_weights[5] + kl7 * self.kl_weights[6]
+            kl_temp = kl_temp + kl6 * self.kl_weights[5] + kl7 * self.kl_weights[6]
             return x, kl_temp
         else:
 
             x = self.block1(x)
-            
             x = self.mp1(x)
-
             x = self.block2(x)
-                
             x = self.mp2(x)
-                
-
             x = self.block3(x)
-
             x = self.block4(x)
-            
             x = self.block5(x)
-
             x = self.mp3(x)
-            
         
             x = torch.flatten(x, 1)
-            if not self.sbp_linear: 
-                x = self.classifier(x)
-                
-            else: 
-                x = self.dr1(x) 
-                x = self.lsbp1
-                x = self.rel2(x)
-                x = self.dr2(x)
-                x = self.lsbp2(x)
-                x = self.rel3(x)
-                x = self.linear(x)
+          
+            x = self.dr1(x) 
+            x = self.lsbp1(x)
+            x = self.rel2(x)
+            x = self.dr2(x)
+            x = self.lsbp2(x)
+            x = self.rel3(x)
+            x = self.last(x)
             return x
 
         
@@ -223,31 +180,28 @@ class SBP_AlexNet(nn.Module):
     def get_sparsity(self):
         spars = []
         snrs = []
-        if self.conv:
-            spars.append(self.block1.conv1.layer_sparsity())
-            snrs.append(self.block1.conv1.display_snr())
-            spars.append(self.block2.conv1.layer_sparsity())
-            snrs.append(self.block2.conv1.display_snr())
-            spars.append(self.block3.conv1.layer_sparsity())
-            snrs.append(self.block3.conv1.display_snr())
-            spars.append(self.block4.conv1.layer_sparsity())
-            snrs.append(self.block4.conv1.display_snr())
-            spars.append(self.block5.conv1.layer_sparsity())
-            snrs.append(self.block5.conv1.display_snr())
-         
+        spars.append(self.block1.conv1.layer_sparsity())
+        snrs.append(self.block1.conv1.display_snr())
+        spars.append(self.block2.conv1.layer_sparsity())
+        snrs.append(self.block2.conv1.display_snr())
+        spars.append(self.block3.conv1.layer_sparsity())
+        snrs.append(self.block3.conv1.display_snr())
+        spars.append(self.block4.conv1.layer_sparsity())
+        snrs.append(self.block4.conv1.display_snr())
+        spars.append(self.block5.conv1.layer_sparsity())
+        snrs.append(self.block5.conv1.display_snr())
         
-        else: 
-            spars.append(self.block1.spb1.layer_sparsity())
-            snrs.append(self.block1.spb1.display_snr())
-            spars.append(self.block2.spb1.layer_sparsity())
-            snrs.append(self.block2.spb1.display_snr())
-            spars.append(self.block3.spb1.layer_sparsity())
-            snrs.append(self.block3.spb1.display_snr())
-            spars.append(self.block4.spb1.layer_sparsity())
-            snrs.append(self.block4.spb1.display_snr())
-            spars.append(self.block5.spb1.layer_sparsity())
-            snrs.append(self.block5.spb1.display_snr())
-            
-        print(spars)
-        print(snrs)
+        spars.append(self.lsbp1.layer_sparsity())
+        spars.append(self.lsbp2.layer_sparsity())
+        snrs.append(self.lsbp1.display_snr())
+        snrs.append(self.lsbp2.display_snr())
+         
+         
+        print("Sparsity: ",spars)
+        print("SNRS: ", snrs)
+         
+    
+    
+
+
          

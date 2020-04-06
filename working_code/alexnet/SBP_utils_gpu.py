@@ -7,8 +7,6 @@ import torch.nn.functional as F
 import torch.nn as nn
 import math
 
-
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 def where(cond, x_1, x_2):
     return (cond * x_1) + ((1-cond) * x_2)
 
@@ -63,14 +61,15 @@ def erfcx(x):
     negative_result[negative_result!=negative_result] = 1.0
     negative_result[negative_result == float("Inf")] = 1.0
     result = negative_mask * negative_result + positive_mask * result
+    result = result.cuda()
     return result
 
 def phi(x):
-    normal = Normal(loc=torch.FloatTensor([0.0]), scale=torch.FloatTensor([1.0]))
+    normal = Normal(loc=torch.cuda.FloatTensor([0.0]), scale=torch.cuda.FloatTensor([1.0]))
     return normal.cdf(x)
 
 def phi_inv(x):
-    normal = Normal(loc=torch.FloatTensor([0.0]), scale=torch.FloatTensor([1.0]))
+    normal = Normal(loc=torch.cuda.FloatTensor([0.0]), scale=torch.cuda.FloatTensor([1.0]))
     return normal.icdf(x)
 
 
@@ -95,6 +94,7 @@ def sample_truncated_normal(mu, sigma, a, b):
     beta = (b - mu)/sigma
     uniform = Uniform(low=0.0,high=1.0)
     sampled_uniform = uniform.sample(mu.size())
+    sampled_uniform = sampled_uniform.cuda()
     gamma = phi(alpha)+sampled_uniform*(phi(beta)-phi(alpha))
 
     return torch.clamp(phi_inv(torch.clamp(gamma, min=1e-5, max=1.0-1e-5))*sigma+mu, min=a, max=b)
@@ -147,6 +147,7 @@ def accuracy(iter, model):
 
     with torch.no_grad():
         for images, labels in iter:
+            images = images.cuda()
             preds = score_predict(model, images)
             total += labels.size(0)
             correct += (preds.cpu().data == labels).sum().item()
@@ -172,7 +173,7 @@ class Conv2d_SBP(nn.Module):
         w = torch.zeros(output_channel,input_channel,kernel_size,kernel_size)
         w = nn.init.xavier_normal_(w)
         self.weight = nn.Parameter(w)
-        
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -185,7 +186,7 @@ class Conv2d_SBP(nn.Module):
         Multiply noise h = h_ * e
         """
         def pdf(x):
-            normal = Normal(loc=torch.FloatTensor([0.0]),scale=torch.FloatTensor([1.0]))
+            normal = Normal(loc=torch.cuda.FloatTensor([0.0]),scale=torch.cuda.FloatTensor([1.0]))
 
             return torch.exp(normal.log_prob(x))
 
@@ -279,7 +280,7 @@ class Linear_SBP(nn.Module):
     def forward(self, input):
 
         def pdf(x):
-            normal = Normal(loc=torch.FloatTensor([0.0]),scale=torch.FloatTensor([1.0]))
+            normal = Normal(loc=torch.cuda.FloatTensor([0.0]),scale=torch.cuda.FloatTensor([1.0]))
 
             return torch.exp(normal.log_prob(x))
 
@@ -346,14 +347,11 @@ class SBP_layer(nn.Module):
     Mathmatichs: y_i = x_i*theta_i, where p(theta_i) ~ Log_uniform[a,b]
     Approximate posterior of theta_i is given by:  q(theta_i | mu_i, sigma_i^2) ~ Log_norm[a,b](theta_i | mu_i, sigma_i^2)
     The target is to optimize KL divergence between p(theta_i) and q(theta_i | mu_i, sigma_i^2): KL(p||q)
-
     Sample usage:
     from SBP_utils import SBP_layer
-
     #for CNN layer, input_dim is number of channels
     #for linear layer, input_dim is number of neurons
     sbp_layer = SBP_layer(input_dim)
-
     #don't forget add kl to loss
     y, kl = sbp_layer(x)
     loss = loss + kl
@@ -370,7 +368,7 @@ class SBP_layer(nn.Module):
     def forward(self, input):
 
         def pdf(x):
-            normal = Normal(loc=torch.FloatTensor([0.0]),scale=torch.FloatTensor([1.0]))
+            normal = Normal(loc=torch.cuda.FloatTensor([0.0]),scale=torch.cuda.FloatTensor([1.0]))
 
             return torch.exp(normal.log_prob(x))
 
@@ -393,11 +391,9 @@ class SBP_layer(nn.Module):
             multiplicator = torch.exp(sample_truncated_normal(mu, sigma, min_log, max_log))
             if (input.size().__len__() == 4):
                 multiplicator = multi_dimension_expand(multiplicator, input)
-                
-             
             output = multiplicator*input
-            self.output_sum = torch.sum(output)
-            self.multiplicator_sum = torch.sum(multiplicator)
+
+
             return output,kl
 
         else:
@@ -410,8 +406,7 @@ class SBP_layer(nn.Module):
             if (input.size().__len__() == 4):
                 multiplicator = multi_dimension_expand(multiplicator, input)
             output = multiplicator * input
-            self.mask = mask
-            self.multiplicator = multiplicator
+
             return output
 
     def layer_sparsity(self):
@@ -434,4 +429,5 @@ class SBP_layer(nn.Module):
         snr = snr_truncated_log_normal(mu, torch.exp(log_sigma), -20.0, 0.0)
         mean = snr.mean()
         return mean
+
 
